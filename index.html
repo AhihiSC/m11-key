@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>M11 · Chạm YubiKey</title>
+<!-- Trang phụ của webapp M11: chỉ làm 1 việc là gọi YubiKey (WebAuthn) — vì khung webapp Google không cho dùng khoá bảo mật.
+     Không chứa dữ liệu, không lưu gì. Thử thách do máy chủ M11 cấp; kết quả ký được máy chủ kiểm lại (đúng trang này, đúng khoá, bộ đếm tăng). -->
+<style>
+:root{--bg:#f3f7fd;--card:#fff;--ink:#1f2848;--muted:#6b7594;--line:#e0e8fa;--blue:#3a5fb0;--blue-soft:#edf2fe;--bad:#c4384a;--bad-soft:#fbe9ec;--ok:#2f7d5b;--ok-soft:#e5f4ec}
+@media (prefers-color-scheme:dark){:root{--bg:#0b1020;--card:#172038;--ink:#e7ecfa;--muted:#8d97b8;--line:#2c3a60;--blue:#9cbcff;--blue-soft:#1f2f5a;--bad:#ff9aa8;--bad-soft:#3a1820;--ok:#86e6cb;--ok-soft:#143a31}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:16px}
+.c{width:100%;max-width:380px;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:24px;text-align:center;box-shadow:0 6px 22px rgba(60,90,160,.12)}
+.k{font-size:44px;line-height:1;margin-bottom:8px}
+h1{font-size:18px;margin:0 0 4px}
+.who{color:var(--muted);font-size:13px;word-break:break-all;margin-bottom:14px}
+.st{border-radius:10px;padding:10px 12px;background:var(--blue-soft);color:var(--blue);font-size:14px}
+.st.bad{background:var(--bad-soft);color:var(--bad)}
+.st.ok{background:var(--ok-soft);color:var(--ok)}
+button{margin-top:14px;border:0;border-radius:10px;padding:10px 18px;background:var(--blue);color:var(--card);font:600 14px system-ui,sans-serif;cursor:pointer}
+button[hidden]{display:none}
+.ft{margin-top:14px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="c">
+  <div class="k" aria-hidden="true">🔑</div>
+  <h1 id="ti">M11 · Chạm YubiKey</h1>
+  <div class="who" id="who"></div>
+  <div class="st" id="st" role="status">Đang kết nối với webapp M11…</div>
+  <button id="go" type="button" hidden>Chạm YubiKey</button>
+  <div class="ft">Cắm YubiKey rồi chạm vào đầu kim loại khi đèn nháy.<br>Trang này tự đóng sau khi xong.</div>
+</div>
+<script>
+(function () {
+  'use strict';
+  // Chỉ nhận lệnh từ khung webapp Apps Script (googleusercontent). Máy chủ M11 vẫn kiểm lại mọi thứ.
+  var FROM = /^https:\/\/n-[a-z0-9]+-[a-z0-9]+-script\.googleusercontent\.com$/;
+  var $ = function (id) { return document.getElementById(id); };
+  var req = null, src = '', busy = false, done = false;
+
+  function say(t, cls) { var s = $('st'); s.textContent = t; s.className = 'st' + (cls ? ' ' + cls : ''); }
+  function b2u(buf) { var b = new Uint8Array(buf), s = ''; for (var i = 0; i < b.length; i++) s += String.fromCharCode(b[i]); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); }
+  function u2b(s) { s = String(s).replace(/-/g, '+').replace(/_/g, '/'); while (s.length % 4) s += '='; var r = atob(s), o = new Uint8Array(r.length); for (var i = 0; i < r.length; i++) o[i] = r.charCodeAt(i); return o; }
+  function send(m) { try { window.opener.postMessage(m, src); } catch (e) {} }
+
+  if (!window.opener) { say('Hãy mở trang này bằng nút "YubiKey" trong webapp M11.', 'bad'); return; }
+  if (!window.PublicKeyCredential || !navigator.credentials) { say('Trình duyệt này không hỗ trợ khoá bảo mật. Dùng Chrome, Edge, Safari hoặc Firefox bản mới.', 'bad'); }
+
+  // Báo "sẵn sàng" lặp lại vài lần (webapp có thể chưa kịp lắng nghe). Tin này không chứa gì bí mật.
+  var tries = 0, ping = setInterval(function () {
+    if (req || ++tries > 60) { clearInterval(ping); if (!req) say('Không nhận được yêu cầu từ webapp. Đóng cửa sổ này và bấm lại.', 'bad'); return; }
+    try { window.opener.postMessage({ m11key: 'ready' }, '*'); } catch (e) {}
+  }, 250);
+
+  window.addEventListener('message', function (e) {
+    if (req || e.source !== window.opener || !FROM.test(e.origin)) return;
+    var d = e.data; if (!d || d.m11key !== 'req' || !d.challenge) return;
+    if (d.rpId !== location.hostname) { say('Cấu hình trang chạm khoá không khớp (' + d.rpId + '). Báo admin.', 'bad'); return; }
+    req = d; src = e.origin;
+    $('ti').textContent = d.op === 'reg' ? 'Đăng ký YubiKey cho M11' : 'Đăng nhập M11 bằng YubiKey';
+    $('who').textContent = d.op === 'reg' ? (d.user && d.user.name) || '' : '';
+    run();
+  });
+
+  $('go').onclick = run;
+  window.addEventListener('beforeunload', function () { if (req && !done) send({ m11key: 'close' }); });
+
+  function run() {
+    if (busy || done || !req) return;
+    busy = true; $('go').hidden = true;
+    say(req.op === 'reg' ? 'Chạm YubiKey để đăng ký…' : 'Chạm YubiKey để vào…');
+    var p;
+    if (req.op === 'reg') {
+      p = navigator.credentials.create({ publicKey: {
+        challenge: u2b(req.challenge), rp: { id: req.rpId, name: req.rpName || 'M11' },
+        user: { id: u2b(req.user.id), name: req.user.name, displayName: req.user.displayName || req.user.name },
+        pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+        authenticatorSelection: { authenticatorAttachment: 'cross-platform', residentKey: 'discouraged', requireResidentKey: false, userVerification: 'discouraged' },
+        attestation: 'none', timeout: 110000, hints: ['security-key']
+      } });
+    } else {
+      p = navigator.credentials.get({ publicKey: {
+        challenge: u2b(req.challenge), rpId: req.rpId, userVerification: 'discouraged', timeout: 110000, hints: ['security-key'],
+        allowCredentials: (req.allow || []).map(function (id) { return { type: 'public-key', id: u2b(id), transports: ['usb', 'nfc'] }; })
+      } });
+    }
+    p.then(function (c) {
+      var r = c.response, m = { m11key: 'res', op: req.op, id: c.id, clientDataJSON: b2u(r.clientDataJSON) };
+      if (req.op === 'reg') m.attestationObject = b2u(r.attestationObject);
+      else { m.authenticatorData = b2u(r.authenticatorData); m.signature = b2u(r.signature); }
+      done = true; send(m);
+      say('Đã chạm khoá ✓ — đang quay lại webapp…', 'ok');
+      setTimeout(function () { window.close(); }, 600);
+    }).catch(function (e) {
+      busy = false;
+      var n = e && e.name, t = n === 'NotAllowedError' ? 'Chưa chạm khoá, đã huỷ hoặc hết giờ.'
+        : n === 'InvalidStateError' ? 'Khoá này đã đăng ký rồi.'
+        : n === 'SecurityError' ? 'Trình duyệt chặn vì sai địa chỉ trang.'
+        : 'Lỗi: ' + ((e && e.message) || n || e);
+      say(t + ' Bấm nút để thử lại.', 'bad'); $('go').hidden = false;
+      send({ m11key: 'err', msg: t });
+    });
+  }
+})();
+</script>
+</body>
+</html>
